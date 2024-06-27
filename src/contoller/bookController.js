@@ -1,5 +1,6 @@
 import Book from "../model/book.js";
 import User from "../model/user.js";
+import mongoose from "mongoose";
 
 export const addBook = async (req, res) => {
   try {
@@ -53,11 +54,9 @@ export const getAllBooks = async (req, res) => {
 
 export const getBookById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const book = await Book.findById(id);
-    if (!book) {
-      return res.status(404).json({ message: "Book not found" });
-    }
+    const book = await Book.findById(req.params.id);
+    if (!book) return res.status(404).json({ message: "Book not found" });
+
     res.status(200).json(book);
   } catch (error) {
     res.status(500).json({ message: error.message });
@@ -65,13 +64,13 @@ export const getBookById = async (req, res) => {
 };
 
 export const searchBooks = async (req, res) => {
+  const { title, author, genre } = req.query;
   try {
-    const { title, author, genre } = req.query;
-    console.log("check author", req.query);
-    const query = {};
+    let query = {};
     if (title) query.title = { $regex: title, $options: "i" };
     if (author) query.author = { $regex: author, $options: "i" };
     if (genre) query.genre = { $regex: genre, $options: "i" };
+
     const books = await Book.find(query);
     res.status(200).json(books);
   } catch (error) {
@@ -80,43 +79,77 @@ export const searchBooks = async (req, res) => {
 };
 
 export const borrowBooks = async (req, res) => {
+  const { bookIds } = req.body;
   try {
-    const userId = req.user._id;
-    const { bookIds } = req.body;
-    const user = await User.findById(userId);
-    user.borrowedBooks.push(...bookIds);
-    await user.save();
+      const user = await User.findById(req.user._id);
+      if (!user) return res.status(404).json({ message: 'User not found' });
 
-    res.status(200).json({ message: "Books borrowed successfully" });
+      const bookObjectIds = bookIds.map(id => new mongoose.Types.ObjectId(id));
+      const books = await Book.find({ _id: { $in: bookObjectIds } });
+
+      if (!user.borrowedBooks) {
+          user.borrowedBooks = [];
+      }
+
+      user.borrowedBooks.push(...books.map(book => book._id));
+      await user.save();
+
+      res.status(200).json({ message: 'Books borrowed successfully', borrowedBooks: user.borrowedBooks });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+      res.status(500).json({ message: error.message });
   }
 };
 
 export const returnBooks = async (req, res) => {
+  const { bookId } = req.body;
+
   try {
-    const userId = req.user._id;
-    const { bookIds } = req.body;
+      const user = await User.findById(req.user._id);
+      if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+      }
 
-    const user = await User.findById(userId);
-    user.borrowedBooks = user.borrowedBooks.filter(
-      (bookId) => !bookIds.includes(bookId)
-    );
-    await user.save();
+      if (!user.borrowedBooks || user.borrowedBooks.length === 0) {
+          return res.status(404).json({ message: 'No borrowed books found for this user' });
+      }
 
-    res.status(200).json({ message: "Books returned successfully" });
+      const index = user.borrowedBooks.indexOf(bookId);
+      if (index !== -1) {
+          user.borrowedBooks.splice(index, 1);
+      } else {
+          return res.status(404).json({ message: 'Book not found in user\'s borrowed list' });
+      }
+
+      await user.save();
+
+      const book = await Book.findById(bookId);
+      if (!book) {
+          return res.status(404).json({ message: 'Book not found' });
+      }
+      book.status = 'Available';
+      await book.save();
+
+      res.status(200).json({ message: 'Book returned successfully' });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+      console.error(error);
+      res.status(500).json({ message: 'Internal server error' });
   }
 };
 
 export const getUserBorrowedBooks = async (req, res) => {
   try {
-    const userId = req.user._id;
+      const user = await User.findById(req.user._id);
+      if (!user) {
+          return res.status(404).json({ message: 'User not found' });
+      }
 
-    const user = await User.findById(userId).populate("borrowedBooks");
-    res.status(200).json(user.borrowedBooks);
+      const borrowedBookIds = user.borrowedBooks || [];
+      const validBookIds = borrowedBookIds.filter(id => mongoose.Types.ObjectId.isValid(id));
+
+      const borrowedBooks = await Book.find({ _id: { $in: validBookIds.map(id => mongoose.Types.ObjectId(id)) } });
+
+      res.status(200).json({ borrowedBooks });
   } catch (error) {
-    res.status(500).json({ message: error.message });
+      res.status(500).json({ message: error.message });
   }
 };
